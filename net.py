@@ -10,6 +10,7 @@ from fvc_net.decoder_resblock import *
 from fvc_net.encoder_resblock import *
 from fvc_net.hyper_decoder import *
 from fvc_net.hyper_encoder import *
+from fvc_net.convlstm import ConvLSTM
 from fvc_net.hyper_prior import *
 from fvc_net.layers.layers import GDN, MaskedConv2d
 from fvc_net.layer import *
@@ -43,12 +44,18 @@ def load_model(model, f):
 class net(nn.Module):
     def __init__(self,):
         super().__init__()
-        self.out_channel_mv=128
+        self.out_channel_mv= 128
         self.out_channel_F = out_channel_F
         self.out_channel_O = out_channel_O
         self.out_channel_M = out_channel_M
         self.deform_ks = deform_ks
         self.deform_groups = deform_groups
+
+
+        self.n_c = 128
+        self.lstm_layer_num = 4
+        self.hidden_dim = [self.n_c // 2 for i in range(self.lstm_layer_num)]
+        self.conv_lstm = ConvLSTM(self.n_c // 2, self.hidden_dim, (5, 5), self.lstm_layer_num, True, True, True)
 
         self.feature_extraction = FeatureExtractor()
         self.frame_reconstruct=feature_reconsnet()
@@ -140,7 +147,10 @@ class net(nn.Module):
                 aux_loss_list.append(m.aux_loss())
         return aux_loss_list
 
-    def forward(self, input_image, referframe, refermotion):
+    def forward(self, input_image, ref_list):
+        # ref_list: (b, t, c, h, w)
+        referframe = ref_list[:, -1]
+        seq_len = ref_list.size(1)
 
         f_cur1, f_cur2, f_cur3 = self.feature_extraction(input_image)
         f_ref1, f_ref2, f_ref3 = self.feature_extraction(referframe)
@@ -153,29 +163,31 @@ class net(nn.Module):
         offset = self.adap(offset1, offset2, offset3)
 
         # hyper motion estimation
-        hyper_motion = self.ME_Net(torch.cat([offset, refermotion], dim=1))
-        encode_hyper_motion = self.motion_encoder(hyper_motion)
-        hyper_motion_hat, hyper_motion_likelihoods = self.motion_hyperprior(encode_hyper_motion)
-        decode_hyper_motion = self.motion_decoder(hyper_motion_hat)
+        # hyper_motion = self.ME_Net(torch.cat([offset, refermotion], dim=1))
+        # encode_hyper_motion = self.motion_encoder(hyper_motion)
+        # hyper_motion_hat, hyper_motion_likelihoods = self.motion_hyperprior(encode_hyper_motion)
+        # decode_hyper_motion = self.motion_decoder(hyper_motion_hat)
 
         # hyper motion compensation
-        deformed_motion = self.dcn_warp(decode_hyper_motion, refermotion)
-        predict_motion = self.MC_Net(torch.cat([deformed_motion, refermotion], dim=1))
+        # deformed_motion = self.dcn_warp(decode_hyper_motion, refermotion)
+        # predict_motion = self.MC_Net(torch.cat([deformed_motion, refermotion], dim=1))
+        #
+        # # motion residual
+        # motion_res = offset - predict_motion
+        # encode_motion_res = self.motion_encoder(motion_res)
+        # motion_res_hat, motion_res_likelihoods = self.motion_hyperprior(encode_motion_res)
+        # decode_motion_res = self.motion_decoder(motion_res_hat)
+        #
+        # offset_info = predict_motion + decode_motion_res
 
-        # motion residual
-        motion_res = offset - predict_motion
-        encode_motion_res = self.motion_encoder(motion_res)
-        motion_res_hat, motion_res_likelihoods = self.motion_hyperprior(encode_motion_res)
-        decode_motion_res = self.motion_decoder(motion_res_hat)
+        # motion compression
+        # encode motion info
+        offset = self.motion_encoder(offset)
+        offset_hat, motion_likelihoods = self.motion_hyperprior(offset)
+        # decode motion info
+        offset_info = self.motion_decoder(offset_hat)   #offset_info (4,64,128,128)
 
-        offset_info = predict_motion + decode_motion_res
-
-        # # motion compression
-        # # encode motion info
-        # offset = self.motion_encoder(offset)
-        # offset_hat, motion_likelihoods = self.motion_hyperprior(offset)
-        # # decode motion info
-        # offset_info = self.motion_decoder(offset_hat)   #offset_info (4,64,128,128)
+        # 此处是否可以添加 mv_refine 网络
 
         # motion compensation
         deformed_f_ref = self.dcn_warp(offset_info, f_ref1)
@@ -183,7 +195,22 @@ class net(nn.Module):
         f_mc = torch.cat((deformed_f_ref, f_ref1), dim=1)
         f_mc = self.MC_Net(f_mc)
 
-        f_context = deformed_f_ref + f_mc                                    ###prediction (4,64,128,128)
+        # hidden_context
+        feature_pool = []
+        h_pool = []
+
+        for t in range(seq_len):
+            feature_t1, feature_t2, feature_t3 = self.feature_extraction(ref_list[:, t])
+            h_pool.append(feature_t1)
+            feature_pool.append([feature_t1, feature_t2, feature_t3 ])
+        h_pool = torch.stack(h_pool, dim=1)
+
+        layer_output, last_state = self.conv_lstm(h_pool)
+        hidden_feature = layer_output[-1][:, t]
+
+        f_context = deformed_f_ref + f_mc      # prediction (4,64,128,128)
+
+        f_context = self.adap(f_context, hidden_feature)
 
         f_temporal_prior_params = self.temporalPriorEncoder(f_context)
 
@@ -196,8 +223,6 @@ class net(nn.Module):
         f_recon_image = self.contextualDecoder_part1(f_res_hat)
 
         recon_image = self.contextualDecoder_part2(torch.cat((f_recon_image, f_context), dim=1))
-
-        batch_size = encoded_res.size()[0]
 
         # # feature space residual
         # res = f_cur - f_context
@@ -219,36 +244,20 @@ class net(nn.Module):
         clipped_recon_image = x_rec.clamp(0., 1.)
 
         ####Rate_LOSS
-        # step 1  loss: lamda * distort
-        mse_loss = torch.mean((offset - offset_info).pow(2))
-        #         loss: lamda * distort + rate
-        # mse_loss = torch.mean((offset - offset_info).pow(2))
 
-        # step 2  loss: lamda * distort
-        # mse_loss = torch.mean((f_cur1 - f_context).pow(2))
-        #         loss: lamda * distort + rate
-        # mse_loss = torch.mean((f_cur1 - f_context).pow(2))
+        mse_loss = torch.mean((x_rec - input_image).pow(2))
+        pred_loss = torch.mean((f_cur1 - f_context).pow(2))
+        batch_size, c, h, w = input_image.size()
 
-        # step 3  loss: lamda * distort
-        # mse_loss = torch.mean((x_rec - input_image).pow(2))
-        #         loss: lamda * distort + rate
-        # mse_loss = torch.mean((x_rec - input_image).pow(2))
-        im_shape = input_image.size()
+        bpp_mv = torch.log(motion_likelihoods['y']).sum() / (-math.log(2) * batch_size * h * w)
+        bpp_mv_z = torch.log(motion_likelihoods['z']).sum() / (-math.log(2) * batch_size * h * w)
 
+        bpp_y = torch.log(f_res_likelihoods['y']).sum() / (-math.log(2) * batch_size * h * w)
+        bpp_z = torch.log(f_res_likelihoods['z']).sum() / (-math.log(2) * batch_size *h * w)
 
-        bpp_hmv = torch.log(hyper_motion_likelihoods['y']).sum() / (-math.log(2) * batch_size * im_shape[2] * im_shape[3])
-        bpp_hmvprior = torch.log(hyper_motion_likelihoods['z']).sum() / (-math.log(2) * batch_size * im_shape[2] * im_shape[3])
+        bpp = bpp_mv + bpp_mv_z + bpp_y + bpp_z
 
-        bpp_mv_res = torch.log(motion_res_likelihoods['y']).sum() / (-math.log(2) * batch_size * im_shape[2] * im_shape[3])
-        bpp_mv_res_prior = torch.log(motion_res_likelihoods['z']).sum() / (-math.log(2) * batch_size * im_shape[2] * im_shape[3])
-
-        bpp_res = torch.log(f_res_likelihoods['y']).sum() / (-math.log(2) * batch_size * im_shape[2] * im_shape[3])
-        bpp_resprior = torch.log(f_res_likelihoods['z']).sum() / (-math.log(2) * batch_size * im_shape[2] * im_shape[3])
-
-        bpp = bpp_hmv + bpp_hmvprior + bpp_mv_res + bpp_mv_res_prior + bpp_res + bpp_resprior
-
-        return clipped_recon_image, mse_loss,  bpp_hmv, bpp_hmvprior, bpp_mv_res, bpp_mv_res_prior, bpp_res, bpp_resprior, bpp
-
+        return clipped_recon_image, mse_loss, bpp_y, bpp_z, bpp_mv, bpp_mv_z, bpp, pred_loss
 
     def compress(self,input_image,refer_frame):
         f_cur1, f_cur2, f_cur3 = self.feature_extraction(input_image)

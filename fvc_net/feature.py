@@ -3,7 +3,7 @@ from fvc_net.layer import *
 g_ch_1x = 3
 g_ch_2x = 64
 g_ch_4x = 128
-g_ch_8x=256
+g_ch_8x = 256
 
 class feature_exactnet(nn.Module):
     def __init__(self):
@@ -23,13 +23,13 @@ class feature_exactnet(nn.Module):
 class FeatureExtractor(nn.Module):
     def __init__(self, inplace=False):
         super().__init__()
-        self.conv1 = nn.Conv2d(g_ch_1x, g_ch_2x, 3, stride=2,padding=1)
+        self.conv1 = nn.Conv2d(g_ch_1x, g_ch_2x, 3, stride=2, padding=1)
         self.res_block1 = ResBlock(g_ch_2x,g_ch_2x)
 
-        self.conv2 = nn.Conv2d(g_ch_2x, g_ch_2x, 3, stride=2,padding=1)
+        self.conv2 = nn.Conv2d(g_ch_2x, g_ch_2x, 3, stride=2, padding=1)
         self.res_block2 = ResBlock(g_ch_2x,g_ch_2x)
 
-        self.conv3 = nn.Conv2d(g_ch_2x, g_ch_2x, 3, stride=2,padding=1)
+        self.conv3 = nn.Conv2d(g_ch_2x, g_ch_2x, 3, stride=2, padding=1)
         self.res_block3 = ResBlock(g_ch_2x,g_ch_2x)
 
     def forward(self, feature):

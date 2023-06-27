@@ -1,3 +1,6 @@
+import torch
+
+from fvc_net.datasets import VideoFolder
 from net import *
 # 让程序选择最合适的卷积实现，加速网络计算
 torch.backends.cudnn.enabled = True
@@ -59,7 +62,7 @@ traindata_path = 'C:/Users/lenovo/Documents/Workspace/Data/train/vimeo_septuplet
 
 # testdata_path='F:/vc_project/video_compression/data/train_data/vimeo_septuplet'
 # testdata_path = 'G:/wangyiming/data/train_data/vimeo_septuplet/'
-testdata_path = 'C:/Users/sunhu/Documents/Data/train/vimeo_septuplet/sequences'
+testdata_path = 'C:/Users/lenovo/Documents/Workspace/Data/train/vimeo_septuplet/'
 
 one_stage = '1'
 
@@ -174,14 +177,10 @@ def train(epoch, global_step):
     sumloss = 0
     sumpsnr = 0
     sumbpp = 0
-    sumbpp_feature = 0
+    sumbpp_y = 0
     sumbpp_z = 0
     sumbpp_mv = 0
     sumbpp_mv_z = 0
-    sumhmv = 0
-    sumhmv_z = 0
-    summv_res = 0
-    summv_res_z = 0
     gop_num = 0
 
     train_loader = DataLoader(dataset=onestage_train_dataset, batch_size=gpu_per_batch, num_workers=gpu_num,
@@ -191,28 +190,28 @@ def train(epoch, global_step):
     tot_iter = len(train_loader)
 
     for batch_idx, input in enumerate(train_loader):
-        # input = {list:3} 0:Tensor(4,3,256,256) 1:Tensor(4,3,256,256) 2:Tensor(4,3,256,256)
-        # 1 2 3
+
+        # input: (4, 5, 3, 256, 256) b, t, c, h, w
+        input = torch.stack(input, dim=1)
+        input = Var(input)
+        batch_size, frame_len, c, h, w = input.shape
 
         global_step += 1
         bat_cnt += 1
-        with torch.no_grad():
-            first_image = net_i(Var(input[0]))["x_hat"]
-            ref_image = tmp_net(Var(input[1]), first_image)[0]
-            ref_motion = tmp_net(Var(input[1]), first_image)[-1]
 
-        input_image = Var(input[2])
+        input_image = Var(input[:, -1])
+        ref_list = Var(input[:, 0 : -1])
 
-        recon_image, mse_loss, bpp_hmv, bpp_hmv_prior, bpp_mv_res, bpp_mv_res_prior, bpp_feature, bpp_z, bpp \
-            = net(input_image, ref_image, ref_motion)
+        recon_image, mse_loss, bpp_y, bpp_z, bpp_mv, bpp_mv_z, bpp, pred_loss = net(input_image, ref_list)
 
-        mse_loss, bpp_hmv, bpp_hmv_prior, bpp_mv_res, bpp_mv_res_prior, bpp_feature, bpp_z, bpp = \
-            torch.mean(mse_loss), torch.mean(bpp_hmv), torch.mean(bpp_hmv_prior), torch.mean(bpp_mv_res),\
-            torch.mean(bpp_mv_res_prior), torch.mean(bpp_feature), torch.mean(bpp_z), torch.mean(bpp)
+        mse_loss, bpp_y, bpp_z, bpp_mv, bpp_mvz, bpp, pred_loss = torch.mean(mse_loss), torch.mean(bpp_y), \
+                        torch.mean(bpp_z), torch.mean(bpp_mv), torch.mean(bpp_mv_z), torch.mean(bpp), torch.mean(pred_loss)
 
-        distribution_loss, distortion = bpp, mse_loss
-        # rd_loss = train_lambda * distortion + distribution_loss
+        # distribution_loss, distortion = bpp, mse_loss
+        distribution_loss, distortion = bpp, pred_loss
+        #rd_loss = train_lambda * distortion + distribution_loss
         rd_loss = train_lambda * distortion
+
         optimizer.zero_grad()
         aux_optimizer.zero_grad()
 
@@ -237,26 +236,23 @@ def train(epoch, global_step):
             sumpsnr += psnr
 
             sumbpp += bpp.detach()
-            sumhmv += bpp_hmv.detach()
-            sumhmv_z += bpp_hmv_prior.detach()
-            summv_res += bpp_mv_res.detach()
-            summv_res_z += bpp_mv_res_prior.detach()
-            sumbpp_feature += bpp_feature.detach()
+            sumbpp_y += bpp_y.detach()
             sumbpp_z += bpp_z.detach()
+            sumbpp_mv += bpp_mv.detach()
+            sumbpp_mv_z += bpp_mvz.detach()
 
         if (batch_idx % 100) == 0 and bat_cnt > 1:
             log = 'Train epoch:{:02} [{:4}/{:4} ({:3.0f}%)]\t loss {:.6f}\t  PSNR {:.6f}\t Bpp {:.6f}\t ' \
-                  'Bpp_hyper_mv {:.6f}\t Bpp_hyper_mv_z {:.6f}\t Bpp_mv_res {:.6f}\t Bpp_mv_res_z {:.6f}\t ' \
-                  'Bpp_feature {:.6f}\t Bpp_feature_z {:.6f}\t Aux loss {:.6f}\t lr {}\t'\
+                  'Bpp_y {:.6f}\t Bpp_z {:.6f}\t Bpp_mv {:.6f}\t Bpp_mv_z {:.6f}\t Aux loss {:.6f}\t lr {}\t'\
                 .format(epoch, batch_idx, tot_iter, 100. * batch_idx / tot_iter, sumloss / cal_cnt,
-                psnr, sumbpp / cal_cnt, sumhmv / cal_cnt, sumhmv_z / cal_cnt, summv_res / cal_cnt,
-                summv_res_z / cal_cnt, sumbpp_feature / cal_cnt, sumbpp_z / cal_cnt, aux_loss.item(), optimizer.param_groups[0]['lr'])
+                psnr, sumbpp / cal_cnt, sumbpp_y / cal_cnt, sumbpp_z / cal_cnt, sumbpp_mv / cal_cnt,
+                sumbpp_mv_z / cal_cnt, aux_loss.item(), optimizer.param_groups[0]['lr'])
 
             logger.info(log)
 
             bat_cnt = 0
             cal_cnt = 0
-            sumbpp = sumhmv = sumhmv_z = summv_res = summv_res_z = sumbpp_feature = sumbpp_z  = sumloss = sumpsnr = suminterpsnr = sumwarppsnr = 0
+            sumbpp = sumbpp_y = sumbpp_z = sumbpp_mv = sumbpp_mv_z  = sumloss = sumpsnr = suminterpsnr = sumwarppsnr = 0
 
         if global_step == 10000:
             return global_step
@@ -298,10 +294,6 @@ if __name__ == "__main__":
     net_i = net_i.cuda()
     net_i.eval()
 
-    # motion prediction
-    tmp_net = FVC_base()
-    load_model(tmp_net, "../model/2048/2-stage/iter323060.model")
-    tmp_net = tmp_net.cuda().eval()
 
     # Optimizer
     optimizer, aux_optimizer = configure_optimizers(net, base_lr, aux_learning_rate)
@@ -313,7 +305,8 @@ if __name__ == "__main__":
     train_transforms = transforms.Compose([transforms.ToTensor(), transforms.RandomCrop(256)])
 
     # two frames datasets
-    onestage_train_dataset = ThreeFrameDataSet(traindata_path)
+    onestage_train_dataset = VideoFolder(dataset, rnd_interval=True, rnd_temp_order=True,
+        split="train", transform=train_transforms, )
     # seven frames datasets
     # twostage_train_dataset = VideoFolder(dataset, rnd_interval=True, rnd_temp_order=True,
     # split="train", transform=train_transforms, )

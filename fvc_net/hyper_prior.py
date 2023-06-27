@@ -118,7 +118,7 @@ class Hyperprior_mv(CompressionModel):
         z_hat, z_likelihoods = self.entropy_bottleneck(z)   # z_hat (4,128,4,4)
 
         scales = self.hyper_decoder_scale(z_hat)            # scales(4,128,16,16)
-        means  = self.hyper_decoder_mean(z_hat)             # means(4,128,16,16)
+        means = self.hyper_decoder_mean(z_hat)             # means(4,128,16,16)
 
 
 

@@ -80,17 +80,23 @@ class DAB(nn.Module):
 
         self.relu = nn.LeakyReLU(0.1, True)
 
-    def forward(self, x, y,z):
+    def forward(self, x, y, z = None):
         '''
         :param x[0]: feature map: B * C * H * W
         :param x[1]: degradation representation: B * C
         '''
+        if z is not None:
+            out = self.relu(self.da_conv1(y, z))
+            out = self.relu(self.conv1(out))
 
-        out = self.relu(self.da_conv1(y, z))
-        out = self.relu(self.conv1(out))
+            out = self.relu(self.da_conv2(x, out))
+            out = self.conv2(out) + x
+        else:
+            out = self.relu(self.da_conv1(x, y))
+            out = self.relu(self.conv1(out))
 
-        out = self.relu(self.da_conv2(x, out))
-        out = self.conv2(out) + x
+            out = self.relu(self.da_conv2(out, y))
+            out = self.conv2(out) + x
 
         return out
 

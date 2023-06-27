@@ -81,7 +81,7 @@ class DataSet(data.Dataset):
 
         return input_image, ref_image
 
-class ThreeFrameDataSet(data.Dataset):
+class FiveFrameDataSet(data.Dataset):
     def __init__(self, path=trainpath + "/vimeo_septuplet/test.txt", im_height=256, im_width=256):
         self.image_ref_list, self.image_mid_list, self.image_input_list = self.get_vimeo(filefolderlist=path)
         self.im_height = im_height
