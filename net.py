@@ -2,7 +2,7 @@ from typing import List
 
 import torch
 import torch.nn as nn
-from fvc_net.models.utils import (conv,deconv,quantize_ste,update_registered_buffers,)
+from fvc_net.models.utils import (conv, deconv, quantize_ste, update_registered_buffers, )
 
 from fvc_net.feature import *
 from fvc_net.motion import *
@@ -20,8 +20,12 @@ from video_net import ME_Spynet, GDN, flow_warp, ResBlock, ResBlock_LeakyReLU_0_
 
 import dataset
 
-def save_model(model,iter, train_lambda,stages):
-    torch.save(model.state_dict(), "C:/Users/lenovo/Documents/Workspace/FeatureCompress/model/{}/{}-stage/iter-{}.model".format(train_lambda,stages,iter))
+
+def save_model(model, iter, train_lambda, stages):
+    torch.save(model.state_dict(),
+               "C:/Users/lenovo/Documents/Workspace/FeatureCompress/model/{}/{}-stage/iter-{}.model".format(
+                   train_lambda, stages, iter))
+
 
 def load_model(model, f):
     with open(f, 'rb') as f:
@@ -39,18 +43,15 @@ def load_model(model, f):
         return 0
 
 
-
-
 class net(nn.Module):
-    def __init__(self,):
+    def __init__(self, ):
         super().__init__()
-        self.out_channel_mv= 128
+        self.out_channel_mv = 128
         self.out_channel_F = out_channel_F
         self.out_channel_O = out_channel_O
         self.out_channel_M = out_channel_M
         self.deform_ks = deform_ks
         self.deform_groups = deform_groups
-
 
         self.n_c = 128
         self.lstm_layer_num = 4
@@ -58,16 +59,17 @@ class net(nn.Module):
         self.conv_lstm = ConvLSTM(self.n_c // 2, self.hidden_dim, (5, 5), self.lstm_layer_num, True, True, True)
 
         self.feature_extraction = FeatureExtractor()
-        self.frame_reconstruct=feature_reconsnet()
+        self.frame_reconstruct = feature_reconsnet()
         self.ME_Net = motion_estimation()
-        self.MC_Net=motion_compensate()
+        self.MC_Net = motion_compensate()
 
         self.adap = DAB(n_feat=64, kernel_size=3, reduction=2, aux_channel=64)
 
-
         ###warp
-        self.offset_mask_conv = nn.Conv2d(out_channel_O,deform_groups * 3 * deform_ks * deform_ks,kernel_size=deform_ks,stride=1,padding=1,)
-        self.deform_conv = DCN(out_channel_F, out_channel_F, kernel_size=(deform_ks, deform_ks), padding=deform_ks // 2,deform_groups=deform_groups)
+        self.offset_mask_conv = nn.Conv2d(out_channel_O, deform_groups * 3 * deform_ks * deform_ks,
+                                          kernel_size=deform_ks, stride=1, padding=1, )
+        self.deform_conv = DCN(out_channel_F, out_channel_F, kernel_size=(deform_ks, deform_ks), padding=deform_ks // 2,
+                               deform_groups=deform_groups)
 
         ###motion compression
         self.motion_encoder = EncoderWithResblock(in_planes=out_channel_O, out_planes=out_channel_M)
@@ -91,9 +93,8 @@ class net(nn.Module):
             nn.Conv2d(out_channel_O, out_channel_M, 5, padding=2),
         )
 
-
         self.contextualEncoder = nn.Sequential(
-            nn.Conv2d(out_channel_N*2, out_channel_N, 5, stride=2, padding=2),
+            nn.Conv2d(out_channel_N * 2, out_channel_N, 5, stride=2, padding=2),
             GDN(out_channel_N),
             ResBlock_LeakyReLU_0_Point_1(out_channel_N),
 
@@ -129,8 +130,6 @@ class net(nn.Module):
 
         )
 
-
-
     def dcn_warp(self, offset_info, f_ref):
         offset_and_mask = self.offset_mask_conv(offset_info)
         o1, o2, mask = torch.chunk(offset_and_mask, 3, dim=1)
@@ -155,7 +154,7 @@ class net(nn.Module):
         f_cur1, f_cur2, f_cur3 = self.feature_extraction(input_image)
         f_ref1, f_ref2, f_ref3 = self.feature_extraction(referframe)
 
-        #feature extract
+        # feature extract
         offset1 = self.ME_Net(torch.cat([f_cur1, f_ref1], dim=1))
         offset2 = self.ME_Net(torch.cat([f_cur2, f_ref2], dim=1))
         offset3 = self.ME_Net(torch.cat([f_cur3, f_ref3], dim=1))
@@ -185,7 +184,7 @@ class net(nn.Module):
         offset = self.motion_encoder(offset)
         offset_hat, motion_likelihoods = self.motion_hyperprior(offset)
         # decode motion info
-        offset_info = self.motion_decoder(offset_hat)   #offset_info (4,64,128,128)
+        offset_info = self.motion_decoder(offset_hat)  # offset_info (4,64,128,128)
 
         # 此处是否可以添加 mv_refine 网络
 
@@ -202,13 +201,13 @@ class net(nn.Module):
         for t in range(seq_len):
             feature_t1, _, _ = self.feature_extraction(ref_list[:, t])
             h_pool.append(feature_t1)
-            #feature_pool.append([feature_t1, feature_t2, feature_t3 ])
+            # feature_pool.append([feature_t1, feature_t2, feature_t3 ])
         h_pool = torch.stack(h_pool, dim=1)
 
         layer_output, last_state = self.conv_lstm(h_pool)
         hidden_feature = layer_output[-1][:, t]
 
-        f_context = deformed_f_ref + f_mc      # prediction (4,64,128,128)
+        f_context = deformed_f_ref + f_mc  # prediction (4,64,128,128)
 
         f_context = self.adap(f_context, hidden_feature)
 
@@ -253,13 +252,13 @@ class net(nn.Module):
         bpp_mv_z = torch.log(motion_likelihoods['z']).sum() / (-math.log(2) * batch_size * h * w)
 
         bpp_y = torch.log(f_res_likelihoods['y']).sum() / (-math.log(2) * batch_size * h * w)
-        bpp_z = torch.log(f_res_likelihoods['z']).sum() / (-math.log(2) * batch_size *h * w)
+        bpp_z = torch.log(f_res_likelihoods['z']).sum() / (-math.log(2) * batch_size * h * w)
 
         bpp = bpp_mv + bpp_mv_z + bpp_y + bpp_z
 
         return clipped_recon_image, mse_loss, bpp_y, bpp_z, bpp_mv, bpp_mv_z, bpp, pred_loss
 
-    def compress(self,input_image,refer_frame):
+    def compress(self, input_image, refer_frame):
         f_cur1, f_cur2, f_cur3 = self.feature_extraction(input_image)
 
         f_ref1, f_ref2, f_ref3 = self.feature_extraction(refer_frame)
@@ -271,10 +270,8 @@ class net(nn.Module):
 
         offset = self.adap(offset1, offset2, offset3)
 
-
         # encode motion info
         offset = self.motion_encoder(offset)
-
 
         offset_hat, out_motion = self.motion_hyperprior.compress(offset)
         # decode motion info
@@ -293,7 +290,6 @@ class net(nn.Module):
         # encoded_res = self.res_encoder(feature)
         f_res_hat, out_context = self.res_hyperprior.compress(encoded_res, f_temporal_prior_params)
 
-
         f_recon_image = self.contextualDecoder_part1(f_res_hat)
         recon_image = self.contextualDecoder_part2(torch.cat((f_recon_image, f_context), dim=1))
 
@@ -304,7 +300,7 @@ class net(nn.Module):
 
         clipped_recon_image = x_rec.clamp(0., 1.)
 
-        return clipped_recon_image,{
+        return clipped_recon_image, {
             "strings": {
                 "motion": out_motion["strings"],
                 "context": out_context["strings"],
@@ -314,9 +310,8 @@ class net(nn.Module):
                 "context": out_context["shape"]},
         }
 
-    def decompress(self,ref_image,strings,shapes):
+    def decompress(self, ref_image, strings, shapes):
         # motion
-
 
         key = "motion"
         offset_hat = self.motion_hyperprior.decompress(strings[key], shapes[key])
@@ -334,15 +329,14 @@ class net(nn.Module):
         # context
         key = "context"
 
-        f_res_hat = self.res_hyperprior.decompress(strings[key], shapes[key],f_temporal_prior_params)
+        f_res_hat = self.res_hyperprior.decompress(strings[key], shapes[key], f_temporal_prior_params)
 
         f_recon_image = self.contextualDecoder_part1(f_res_hat)
         recon_image = self.contextualDecoder_part2(torch.cat((f_recon_image, f_context), dim=1))
 
         x_rec = self.frame_reconstruct(recon_image)
-        x_rec= x_rec.clamp(0., 1.)
+        x_rec = x_rec.clamp(0., 1.)
         return {"x_hat": x_rec}
-
 
     def load_state_dict(self, state_dict):
 
@@ -376,7 +370,6 @@ class net(nn.Module):
 
         super().load_state_dict(state_dict)
 
-
     def update(self, scale_table=None, force=False):
 
         SCALES_MIN = 0.11
@@ -399,12 +392,9 @@ class net(nn.Module):
 
         return updated
 
+    def test(self, input_image, ref_image):
 
-    def test(self,input_image, ref_image):
-
-
-
-        x_rec,strings_and_shape = self.compress(input_image, ref_image)
+        x_rec, strings_and_shape = self.compress(input_image, ref_image)
 
         strings, shape = strings_and_shape["strings"], strings_and_shape["shape"]
 
@@ -412,10 +402,10 @@ class net(nn.Module):
 
         num_pixels = input_image.size()[2] * input_image.size()[3]
         num_pixels = torch.tensor(num_pixels).float()
-        mv_y_string=strings["motion"][0][0]
-        mv_z_string=strings["motion"][1][0]
-        res_y_string=strings["context"][0][0]
-        res_z_string=strings["context"][1][0]
+        mv_y_string = strings["motion"][0][0]
+        mv_z_string = strings["motion"][1][0]
+        res_y_string = strings["context"][0][0]
+        res_z_string = strings["context"][1][0]
         bpp = (len(mv_y_string) + len(mv_z_string) + len(res_y_string) + len(res_z_string)) * 8.0 / num_pixels
 
         reconframe = reconframe.clamp(0., 1.)
@@ -426,15 +416,4 @@ class net(nn.Module):
         # print('compress_reconframe:', compressreconframepsnr)
         # print('decompress_reconframe:',decompressreconframepsnr)
 
-        return bpp,reconframe
-
-
-
-
-
-
-
-
-
-
-
+        return bpp, reconframe

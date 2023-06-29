@@ -316,6 +316,7 @@ if __name__ == "__main__":
         print("loading pretrain : ", args.pretrain)
         global_step = load_model(model, args.pretrain)
 
+    testLSTM_HEVC(global_step, net=net, filelist="../data/B.txt", testfull=True)
     # testHEVC(global_step=0, net=net, filelist="../data/B.txt", testfull=True)
 
     stepoch = global_step // (onestage_train_dataset.__len__() // gpu_per_batch)  # * gpu_num))
@@ -327,7 +328,7 @@ if __name__ == "__main__":
         global_step = train(epoch, global_step)
         save_model(model, global_step, train_lambda, one_stage)
 
-        # testHEVC(global_step=0, net=net, filelist="../data/B.txt", testfull=True)
+        testLSTM_HEVC(global_step, net=net, filelist="../data/B.txt", testfull=True)
         # testhevcA(global_step, net, ref_i_dir, testfull=True)
         # testhevcB(global_step, net, ref_i_dir, testfull=True)
         # testhevcC(global_step, net, ref_i_dir, testfull=True)

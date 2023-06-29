@@ -1,5 +1,7 @@
 import argparse
 import logging
+import torch
+
 from fvc import *
 from fvc_net.ms_ssim_torch import *
 from fvc import FVC_base
@@ -559,6 +561,113 @@ def testHEVC(global_step, net, filelist, testfull=True): # 定义测试函数，
         ave_bpp = sumbpp / cnt
         ave_psnr = sumpsnr / cnt
         ave_msssim = summsssim / cnt
-        log = "HEVC_ClassC dataset : average bpp : %.6lf, average psnr : %.6lf, average msssim: %.6lf\n" % (ave_bpp, ave_psnr, ave_msssim)
+        log = "HEVC_ClassB dataset : average bpp : %.6lf, average psnr : %.6lf, average msssim: %.6lf\n" % (ave_bpp, ave_psnr, ave_msssim)
+        logger.info(log)
+
+
+def testLSTM_HEVC(global_step, net, filelist, testfull=True):  # 定义测试函数，接受四个参数：global_step，net，filelist 和 testfull。
+    net.update(force=True)  # 更新网络
+    # I_codec = cheng2020_anchor(quality=lambda_I_quality_map[args.lambda_weight], metric='mse', pretrained=True).cuda()
+    I_codec = cheng2020_anchor(quality=6, metric='mse', pretrained=True).cuda()
+    I_codec.eval()
+
+    test_dataset = HEVCDataSet(filelist=filelist, testfull=testfull)  # 定义测试数据集
+    test_loader = DataLoader(dataset=test_dataset, shuffle=False, num_workers=0, batch_size=1,
+                             pin_memory=True)  # 定义测试数据加载器
+
+    sumbpp = 0  # 初始化总 bpp
+    sumpsnr = 0  # 初始化总 PSNR
+    summsssim = 0  # 初始化总 MS-SSIM
+    cnt = 0  # 初始化计数器
+    gop_num = 0
+
+    with torch.no_grad():  # 禁用梯度计算
+
+        net.eval()  # 将网络设置为评估模式
+
+        ref_list = []
+
+        for batch_idx, input in enumerate(test_loader):  # 遍历测试数据加载器中的每个批次
+            # input (1, 10, C, H, W)
+            if batch_idx == 11:  # 如果批次索引等于11，则跳出循环
+                break
+
+
+
+            input_images = input[0].cuda()  # 获取输入图像
+            seqlen = input_images.size()[0]  # 获取序列长度/图片张数
+
+            for i in range(seqlen):
+                if i == 0:  # 如果是第一帧
+                    I_frame = input_images[i, :, :, :]  # 获取 I 帧并将其转移到 GPU 上
+                    # print(I_frame.shape)   # 打印 I 帧的形状
+                    num_pixels = 1 * I_frame.shape[1] * I_frame.shape[2]  # 计算像素数量
+                    arr = I_codec(torch.unsqueeze(I_frame, 0))  # 对 I 帧进行编码，返回一个字典，包含编码结果和概率分布等信息
+                    I_rec = arr['x_hat']  # 获取重建的 I 帧
+                    I_likelihood_y = arr["likelihoods"]['y']  # 获取 y 方向概率分布
+                    I_likelihood_z = arr["likelihoods"]['z']  # 获取 z 方向概率分布
+
+                    ref_image = I_rec.clone().detach()  # 获取参考图像（即重建的 I 帧）
+                    y_bpp = cal_bpp(likelihood=I_likelihood_y,
+                                    num_pixels=num_pixels).cpu().detach().numpy()  # 计算 y 方向 bpp
+                    z_bpp = cal_bpp(likelihood=I_likelihood_z,
+                                    num_pixels=num_pixels).cpu().detach().numpy()  # 计算 z 方向 bpp
+                    bpp = y_bpp + z_bpp  # 计算总 bpp
+                    psnr = cal_psnr(distortion=cal_distoration(I_rec, I_frame)).cpu().detach().numpy()  # 计算 PSNR
+
+                    I_frame = torch.unsqueeze(I_frame, 0)
+                    msssim = ms_ssim(I_rec.cpu().detach(), I_frame.cpu().detach(), data_range=1.0,
+                                     size_average=True)  # MS-SSIM
+
+                    if batch_idx == 0:
+                        ref_list = ref_image.unsqueeze(1)
+                    else:
+                        ref_list = torch.cat([ref_list, ref_image.unsqueeze(1)], 1)
+
+
+                    print("------------------ GOP {0} --------------------".format(batch_idx + 1))  # 打印 GOP 分割线和编号
+                    print("I frame: ", bpp, "\t", psnr)  # 打印 I 帧的 bpp 和 PSNR
+
+                    gop_num += 1  # GOP 数量加一
+
+                else:
+                    cur_frame = input_images[i, :, :, :].cuda()  # 获取当前帧并将其转移到 GPU 上
+                    cur_frame, ref_image = Var(torch.unsqueeze(cur_frame, 0)), Var(
+                        ref_image)  # 将当前帧、参考图像和左侧参考帧转换为 CUDA 变量
+
+                    torch.use_deterministic_algorithms(True)  # 启用确定性算法
+                    torch.set_num_threads(1)  # 设置线程数为1
+
+                    reconframe, mse_loss, bpp_y, bpp_z, bpp_mv, bpp_mv_z, bpp, pred_loss = net(cur_frame, ref_list)  # 使用网络进行测试，返回 bpp 和重建帧
+
+                    torch.use_deterministic_algorithms(False)  # 禁用确定性算法
+                    torch.set_num_threads(36)  # 设置线程数为36
+                    mse_loss = torch.mean((reconframe - cur_frame).pow(2))  # 计算均方误差损失
+
+                    bpp = torch.mean(bpp).cpu().detach()  # 累加 bpp 的平均值
+                    psnr = torch.mean(10 * (torch.log(1. / mse_loss) / np.log(10))).cpu().detach()  # 累加 PSNR 的平均值
+                    msssim = ms_ssim(reconframe.cpu().detach(), cur_frame.cpu().detach(), data_range=1.0,
+                                     size_average=True)  # 累加 MS-SSIM 的平均值
+                    rd_cost = cal_rd_cost(distortion=mse_loss, bpp=bpp).cpu()  # 计算 RD cost
+
+                    ref_image = reconframe  # 更新参考图像为重建帧
+
+                    ref_list = torch.cat([ref_list, ref_image.unsqueeze(1)], 1)
+
+                    print("P frame: ", bpp, "\t", psnr)  # 打印 P 帧的 bpp 和 PSNR
+
+                if ref_list.size(1) > 3:
+                    ref_list = ref_list[:, -3:]
+
+                cnt += 1
+                sumbpp += bpp
+                sumpsnr += psnr
+                summsssim += msssim
+
+        ave_bpp = sumbpp / cnt
+        ave_psnr = sumpsnr / cnt
+        ave_msssim = summsssim / cnt
+        log = "HEVC_ClassB dataset : average bpp : %.6lf, average psnr : %.6lf, average msssim: %.6lf\n" % (
+        ave_bpp, ave_psnr, ave_msssim)
         logger.info(log)
 
