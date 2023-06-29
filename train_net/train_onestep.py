@@ -17,7 +17,7 @@ print_step = 100
 cal_step = 10
 # print_step = 10
 warmup_step = 0  # // gpu_num
-gpu_per_batch = 4
+gpu_per_batch = 2
 test_step = 10000  # // gpu_num
 tot_epoch = 1000000
 tot_step = 2000000
@@ -204,13 +204,13 @@ def train(epoch, global_step):
 
         recon_image, mse_loss, bpp_y, bpp_z, bpp_mv, bpp_mv_z, bpp, pred_loss = net(input_image, ref_list)
 
-        mse_loss, bpp_y, bpp_z, bpp_mv, bpp_mvz, bpp, pred_loss = torch.mean(mse_loss), torch.mean(bpp_y), \
+        mse_loss, bpp_y, bpp_z, bpp_mv, bpp_mv_z, bpp, pred_loss = torch.mean(mse_loss), torch.mean(bpp_y), \
                         torch.mean(bpp_z), torch.mean(bpp_mv), torch.mean(bpp_mv_z), torch.mean(bpp), torch.mean(pred_loss)
 
-        # distribution_loss, distortion = bpp, mse_loss
-        distribution_loss, distortion = bpp, pred_loss
-        #rd_loss = train_lambda * distortion + distribution_loss
-        rd_loss = train_lambda * distortion
+        distribution_loss, distortion = bpp, mse_loss
+        # distribution_loss, distortion = bpp_mv + bpp_mv_z, pred_loss
+        rd_loss = train_lambda * distortion + distribution_loss
+        # rd_loss = train_lambda * distortion
 
         optimizer.zero_grad()
         aux_optimizer.zero_grad()
@@ -239,7 +239,7 @@ def train(epoch, global_step):
             sumbpp_y += bpp_y.detach()
             sumbpp_z += bpp_z.detach()
             sumbpp_mv += bpp_mv.detach()
-            sumbpp_mv_z += bpp_mvz.detach()
+            sumbpp_mv_z += bpp_mv_z.detach()
 
         if (batch_idx % 100) == 0 and bat_cnt > 1:
             log = 'Train epoch:{:02} [{:4}/{:4} ({:3.0f}%)]\t loss {:.6f}\t  PSNR {:.6f}\t Bpp {:.6f}\t ' \
@@ -254,7 +254,7 @@ def train(epoch, global_step):
             cal_cnt = 0
             sumbpp = sumbpp_y = sumbpp_z = sumbpp_mv = sumbpp_mv_z  = sumloss = sumpsnr = suminterpsnr = sumwarppsnr = 0
 
-        if global_step == 10000:
+        if global_step == 1000000:
             return global_step
 
     log = 'Train Epoch : {:02} Loss:\t {:.6f}\t lr:{}'.format(epoch, sumloss / bat_cnt, cur_lr)

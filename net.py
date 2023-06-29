@@ -200,9 +200,9 @@ class net(nn.Module):
         h_pool = []
 
         for t in range(seq_len):
-            feature_t1, feature_t2, feature_t3 = self.feature_extraction(ref_list[:, t])
+            feature_t1, _, _ = self.feature_extraction(ref_list[:, t])
             h_pool.append(feature_t1)
-            feature_pool.append([feature_t1, feature_t2, feature_t3 ])
+            #feature_pool.append([feature_t1, feature_t2, feature_t3 ])
         h_pool = torch.stack(h_pool, dim=1)
 
         layer_output, last_state = self.conv_lstm(h_pool)
